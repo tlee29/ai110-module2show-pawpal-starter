@@ -2,8 +2,10 @@
 
 Run from the project folder:
 
-    pytest tests_test_pawpal.py
+    pytest test_pawpal.py
 """
+
+from datetime import date, timedelta
 
 from pawpal_system import Pet, Scheduler, Task
 
@@ -93,3 +95,75 @@ def test_find_conflicts_ignores_back_to_back():
     sched = Scheduler(available_minutes=120, tasks=[a, b])
 
     assert sched.find_conflicts() == []
+
+
+# --- Required: Sorting Correctness -----------------------------------------
+
+def test_sort_by_time_returns_chronological_order():
+    """Sorting Correctness: tasks come back strictly earliest -> latest."""
+    tasks = [
+        Task("Dinner", "feeding", 10, due_time="18:00"),
+        Task("Lunch", "feeding", 10, due_time="12:15"),
+        Task("Breakfast", "feeding", 10, due_time="07:30"),
+        Task("Night meds", "medication", 5, due_time="22:45"),
+    ]
+    sched = Scheduler(available_minutes=240, tasks=tasks)
+
+    ordered_times = [t.due_time for t in sched.sort_by_time()]
+    assert ordered_times == ["07:30", "12:15", "18:00", "22:45"]
+
+
+# --- Required: Recurrence Logic --------------------------------------------
+
+def test_completing_daily_task_creates_next_days_occurrence():
+    """Recurrence Logic: completing a daily task spawns one for the next day."""
+    pet = Pet("Mochi", "dog")
+    today = date.today()
+    feed = Task("Feed", "feeding", 10, frequency="daily", due_date=today)
+    pet.add_task(feed)
+
+    next_task = pet.complete_task(feed)
+
+    # Original is done; a brand-new, incomplete occurrence now exists.
+    assert feed.completed is True
+    assert next_task is not None
+    assert next_task.completed is False
+    assert next_task.due_date == today + timedelta(days=1)
+    # The new occurrence was attached to the same pet.
+    assert next_task in pet.tasks
+    assert next_task.pet_name == "Mochi"
+    assert len(pet.tasks) == 2
+
+
+def test_completing_one_off_task_creates_no_recurrence():
+    """A non-recurring task produces no follow-up when completed."""
+    pet = Pet("Luna", "cat")
+    once = Task("Vet visit", "medical", 45, frequency="one-off")
+    pet.add_task(once)
+
+    assert pet.complete_task(once) is None
+    assert len(pet.tasks) == 1  # nothing new was added
+
+
+# --- Required: Conflict Detection (duplicate times) ------------------------
+
+def test_find_conflicts_flags_identical_times():
+    """Conflict Detection: two tasks at the exact same time are flagged."""
+    walk = Task("Walk", "walk", 30, due_time="08:00")
+    meds = Task("Meds", "medication", 5, due_time="08:00")  # same start time
+    sched = Scheduler(available_minutes=120, tasks=[walk, meds])
+
+    conflicts = sched.find_conflicts()
+    assert len(conflicts) == 1
+    assert conflicts[0] == (walk, meds)
+
+
+def test_conflict_warnings_reports_cross_pet_overlap():
+    """A single owner can't serve two pets at once — cross-pet overlaps warn."""
+    a = Task("Walk", "walk", 30, due_time="08:00", pet_name="Mochi")
+    b = Task("Feed", "feeding", 10, due_time="08:00", pet_name="Luna")
+    sched = Scheduler(available_minutes=120, tasks=[a, b])
+
+    warnings = sched.conflict_warnings()
+    assert len(warnings) == 1
+    assert "Mochi" in warnings[0] and "Luna" in warnings[0]
