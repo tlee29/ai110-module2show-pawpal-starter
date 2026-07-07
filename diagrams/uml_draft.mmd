@@ -1,0 +1,51 @@
+classDiagram
+    %% PawPal+ domain model — four classes: Owner, Pet, Task, Scheduler
+
+    class Owner {
+        +str name
+        +int available_minutes_per_day
+        +list~str~ preferences
+        +update_available_time(minutes) None
+        +update_preferences(preferences) None
+        +view_daily_schedule() DailySchedule
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +list~Task~ tasks
+        +add_task(task) None
+        +remove_task(task) None
+        +update_info(**fields) None
+        +get_tasks() list~Task~
+    }
+
+    class Task {
+        +str name
+        +str category
+        +int duration_minutes
+        +str priority
+        +str frequency
+        +Optional~str~ due_time
+        +bool completed
+        +mark_complete() None
+        +edit(**fields) None
+        +priority_score() int
+    }
+
+    class Scheduler {
+        +int available_minutes
+        +list~Task~ tasks
+        +list~str~ preferences
+        +prioritize_tasks() list~Task~
+        +generate_schedule() DailySchedule
+        +fits_time_budget(task, remaining) bool
+        +explain_decisions() list~str~
+    }
+
+    Owner "1" --> "many" Pet : owns
+    Pet "1" *-- "many" Task : has
+    Scheduler ..> Owner : reads preferences
+    Scheduler ..> Task : orders &amp; selects
