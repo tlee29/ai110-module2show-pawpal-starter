@@ -7,7 +7,7 @@ Run from the project folder:
 
 from datetime import date, timedelta
 
-from pawpal_system import Pet, Scheduler, Task
+from pawpal_system import Owner, Pet, Scheduler, Task
 
 
 def test_mark_complete_changes_status():
@@ -41,6 +41,24 @@ def test_sort_by_time_orders_by_due_time_untimed_last():
     sched = Scheduler(available_minutes=120, tasks=[late, untimed, early])
 
     assert sched.sort_by_time() == [early, late, untimed]
+
+
+# --- Priority-first ordering -----------------------------------------------
+
+def test_sort_by_priority_then_time():
+    """High priority always precedes lower; ties fall back to earliest time."""
+    low_early = Task("Tidy", "care", 10, priority="low", due_time="06:00")
+    high_late = Task("Meds", "medication", 5, priority="high", due_time="20:00")
+    high_early = Task("Walk", "walk", 30, priority="high", due_time="08:00")
+    med = Task("Feed", "feeding", 10, priority="medium", due_time="12:00")
+    sched = Scheduler(
+        available_minutes=120, tasks=[low_early, high_late, high_early, med]
+    )
+
+    ordered = sched.sort_by_priority_then_time()
+    # Both highs first (earliest-time tie-break), then medium, then low —
+    # even though low_early has the earliest clock time of all.
+    assert ordered == [high_early, high_late, med, low_early]
 
 
 # --- Filtering by pet / status ---------------------------------------------
@@ -158,6 +176,28 @@ def test_find_conflicts_flags_identical_times():
     assert conflicts[0] == (walk, meds)
 
 
+def test_suggest_next_slot_finds_earliest_gap():
+    """Stretch: suggest_next_slot proposes the earliest conflict-free start."""
+    # Busy 08:00-08:30 and 09:00-10:00; a 30-min task fits at 08:30.
+    a = Task("Walk", "walk", 30, due_time="08:00")
+    b = Task("Feed", "feeding", 60, due_time="09:00")
+    sched = Scheduler(available_minutes=240, tasks=[a, b])
+
+    # First free slot at/after 08:00 for a 30-min task is 08:30 (before b).
+    assert sched.suggest_next_slot(30) == "08:30"
+    # A 45-min task won't fit in the 30-min gap, so it lands after b at 10:00.
+    assert sched.suggest_next_slot(45) == "10:00"
+
+
+def test_suggest_next_slot_returns_none_when_day_full():
+    """No slot fits before the day's end -> returns None."""
+    block = Task("All day", "care", 60, due_time="21:30")  # 21:30-22:30
+    sched = Scheduler(available_minutes=120, tasks=[block])
+
+    # Only room is 08:00-21:30; a 30-min task fits there, but cap the window tight:
+    assert sched.suggest_next_slot(30, earliest="21:45", latest="22:00") is None
+
+
 def test_conflict_warnings_reports_cross_pet_overlap():
     """A single owner can't serve two pets at once — cross-pet overlaps warn."""
     a = Task("Walk", "walk", 30, due_time="08:00", pet_name="Mochi")
@@ -167,3 +207,37 @@ def test_conflict_warnings_reports_cross_pet_overlap():
     warnings = sched.conflict_warnings()
     assert len(warnings) == 1
     assert "Mochi" in warnings[0] and "Luna" in warnings[0]
+
+
+# --- Persistence (save/load JSON) ------------------------------------------
+
+def test_owner_json_round_trip(tmp_path):
+    """Persistence: saving then loading reproduces the owner, pets, and tasks."""
+    from datetime import date
+
+    owner = Owner("Jordan", 90, preferences=["medication"])
+    pet = Pet("Mochi", "dog", breed="Shiba", age=3)
+    pet.add_task(
+        Task("Give meds", "medication", 5, priority="high",
+             due_time="08:00", due_date=date(2026, 7, 7))
+    )
+    owner.add_pet(pet)
+
+    path = tmp_path / "data.json"
+    owner.save_to_json(str(path))
+    loaded = Owner.load_from_json(str(path))
+
+    assert loaded is not None
+    assert loaded.name == "Jordan"
+    assert loaded.available_minutes_per_day == 90
+    assert loaded.preferences == ["medication"]
+    assert len(loaded.pets) == 1
+    restored_task = loaded.pets[0].tasks[0]
+    assert restored_task.name == "Give meds"
+    assert restored_task.pet_name == "Mochi"  # stamp survives the round trip
+    assert restored_task.due_date == date(2026, 7, 7)  # date parsed back correctly
+
+
+def test_load_from_json_missing_file_returns_none(tmp_path):
+    """Loading a non-existent file returns None so the app can start fresh."""
+    assert Owner.load_from_json(str(tmp_path / "nope.json")) is None

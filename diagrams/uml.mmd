@@ -1,15 +1,82 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
-    %% Keep this file updated so it matches your final implementation.
+    %% PawPal+ domain model (final) — Owner, Pet, Task, Scheduler, DailyPlan
 
-    class ClassName {
-        +type attribute
-        +method() returnType
+    class Owner {
+        +str name
+        +int available_minutes_per_day
+        +list~str~ preferences
+        +list~Pet~ pets
+        +add_pet(pet) None
+        +update_available_time(minutes) None
+        +update_preferences(preferences) None
+        +all_tasks() list~Task~
+        +view_daily_schedule(day_index) DailyPlan
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +list~Task~ tasks
+        +add_task(task) None
+        +remove_task(task) None
+        +complete_task(task) Optional~Task~
+        +update_info(**fields) None
+        +get_tasks() list~Task~
     }
 
-    ClassName --> AnotherClass : relationship
+    class Task {
+        +str name
+        +str category
+        +int duration_minutes
+        +str priority
+        +str frequency
+        +Optional~str~ due_time
+        +Optional~date~ due_date
+        +bool completed
+        +Optional~str~ pet_name
+        +int anchor_day
+        +mark_complete() None
+        +edit(**fields) None
+        +priority_score(preferences) int
+        +start_minutes() Optional~int~
+        +end_minutes() Optional~int~
+        +is_due_today(day_index) bool
+        +next_occurrence() Optional~Task~
+    }
+
+    class DailyPlan {
+        +list~Task~ scheduled
+        +list~Task~ skipped
+        +list~str~ explanations
+        +int total_minutes
+        +summary() str
+    }
+
+    class Scheduler {
+        +int available_minutes
+        +list~Task~ tasks
+        +list~str~ preferences
+        +from_owner(owner) Scheduler$
+        +pending_tasks() list~Task~
+        +completed_tasks() list~Task~
+        +tasks_for_pet(pet_name) list~Task~
+        +filter_tasks(pet_name, status, category) list~Task~
+        +sort_by_time(candidates) list~Task~
+        +find_conflicts(candidates) list~tuple~
+        +conflict_warnings(candidates) list~str~
+        +complete_task(name, pet_name) bool
+        +prioritize_tasks(candidates) list~Task~
+        +fits_time_budget(task, remaining) bool
+        +generate_schedule(day_index) DailyPlan
+    }
+
+    Owner "1" o-- "0..*" Pet : owns
+    Pet "1" *-- "0..*" Task : has
+    Owner ..> Scheduler : builds
+    Owner ..> DailyPlan : returns
+    Scheduler ..> Owner : from_owner reads
+    Scheduler ..> Task : selects &amp; orders
+    Scheduler ..> DailyPlan : produces
+    DailyPlan o-- "0..*" Task : references

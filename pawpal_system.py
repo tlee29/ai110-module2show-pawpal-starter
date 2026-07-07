@@ -13,9 +13,14 @@ Design notes (revised after skeleton review):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+import json
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Optional
+
+# Default file the Owner persists to / loads from between runs.
+DATA_FILE = "data.json"
 
 # Priority label -> base numeric score (higher = scheduled first).
 PRIORITY_SCORES = {"low": 1, "medium": 2, "high": 3}
@@ -23,6 +28,16 @@ PRIORITY_SCORES = {"low": 1, "medium": 2, "high": 3}
 PREFERENCE_BONUS = 2
 # How many days forward each frequency repeats (None => one-off, no repeat).
 RECURRENCE_DAYS = {"daily": 1, "weekly": 7, "biweekly": 14, "monthly": 30}
+
+
+def _parse_hhmm(clock: str) -> Optional[int]:
+    """Parse an 'HH:MM' string into minutes since midnight, or None if invalid."""
+    try:
+        hours, minutes = clock.split(":")
+        total = int(hours) * 60 + int(minutes)
+    except (ValueError, AttributeError):
+        return None
+    return total if 0 <= total < 24 * 60 else None
 
 
 @dataclass
@@ -64,14 +79,7 @@ class Task:
         """Parse `due_time` ("HH:MM") into minutes since midnight, or None."""
         if not self.due_time:
             return None
-        try:
-            hours, minutes = self.due_time.split(":")
-            total = int(hours) * 60 + int(minutes)
-        except (ValueError, AttributeError):
-            return None
-        if not 0 <= total < 24 * 60:
-            return None
-        return total
+        return _parse_hhmm(self.due_time)
 
     def end_minutes(self) -> Optional[int]:
         """When this task finishes, in minutes since midnight, or None."""
@@ -116,6 +124,20 @@ class Task:
             completed=False,
         )
 
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-safe dict (`due_date` -> ISO string)."""
+        data = asdict(self)
+        data["due_date"] = self.due_date.isoformat() if self.due_date else None
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Task":
+        """Rebuild a Task from a dict produced by `to_dict` (parse `due_date`)."""
+        data = dict(data)  # don't mutate the caller's dict
+        raw_date = data.get("due_date")
+        data["due_date"] = date.fromisoformat(raw_date) if raw_date else None
+        return cls(**data)
+
 
 @dataclass
 class Pet:
@@ -158,6 +180,29 @@ class Pet:
     def get_tasks(self) -> list[Task]:
         """Return this pet's task list."""
         return self.tasks
+
+    def to_dict(self) -> dict:
+        """Serialize this pet and its tasks to a JSON-safe dict."""
+        return {
+            "name": self.name,
+            "species": self.species,
+            "breed": self.breed,
+            "age": self.age,
+            "tasks": [t.to_dict() for t in self.tasks],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Pet":
+        """Rebuild a Pet (and its Tasks) from a dict produced by `to_dict`."""
+        pet = cls(
+            name=data["name"],
+            species=data["species"],
+            breed=data.get("breed", ""),
+            age=data.get("age", 0),
+        )
+        for task_data in data.get("tasks", []):
+            pet.tasks.append(Task.from_dict(task_data))
+        return pet
 
 
 @dataclass
@@ -218,6 +263,47 @@ class Owner:
             preferences=self.preferences,
         )
         return scheduler.generate_schedule(day_index=day_index)
+
+    # --- persistence ----------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize the whole owner graph (pets + tasks) to a JSON-safe dict."""
+        return {
+            "name": self.name,
+            "available_minutes_per_day": self.available_minutes_per_day,
+            "preferences": self.preferences,
+            "pets": [pet.to_dict() for pet in self.pets],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Owner":
+        """Rebuild an Owner (with pets and tasks) from a serialized dict."""
+        owner = cls(
+            name=data["name"],
+            available_minutes_per_day=data["available_minutes_per_day"],
+            preferences=data.get("preferences", []),
+        )
+        for pet_data in data.get("pets", []):
+            owner.pets.append(Pet.from_dict(pet_data))
+        return owner
+
+    def save_to_json(self, path: str = DATA_FILE) -> None:
+        """Write this owner (and all pets/tasks) to `path` as JSON."""
+        Path(path).write_text(
+            json.dumps(self.to_dict(), indent=2), encoding="utf-8"
+        )
+
+    @classmethod
+    def load_from_json(cls, path: str = DATA_FILE) -> Optional["Owner"]:
+        """Load an Owner from `path`, or return None if the file doesn't exist.
+
+        Returning None (rather than raising) lets the app fall back to a fresh
+        owner on first run, before any data has been saved.
+        """
+        file = Path(path)
+        if not file.exists():
+            return None
+        return cls.from_dict(json.loads(file.read_text(encoding="utf-8")))
 
 
 class Scheduler:
@@ -334,6 +420,48 @@ class Scheduler:
             )
         return warnings
 
+    def suggest_next_slot(
+        self,
+        duration_minutes: int,
+        earliest: str = "08:00",
+        latest: str = "22:00",
+        candidates: Optional[list[Task]] = None,
+    ) -> Optional[str]:
+        """Find the earliest free start time that fits a task of `duration_minutes`.
+
+        Scans the day from `earliest` to `latest`, treating every existing timed
+        task as a busy [start, end) block. Returns the first "HH:MM" start where a
+        `duration_minutes`-long task fits in a gap without overlapping anything, or
+        None if the day is too full. Untimed tasks are ignored (they don't block a
+        clock slot). This goes beyond basic scheduling: instead of only *detecting*
+        conflicts, it proactively *proposes* a conflict-free time.
+        """
+        pool = candidates if candidates is not None else self.tasks
+        day_start = _parse_hhmm(earliest)
+        day_end = _parse_hhmm(latest)
+        if day_start is None or day_end is None or duration_minutes <= 0:
+            return None
+
+        # Collect busy blocks from timed tasks, sorted by start.
+        busy = sorted(
+            (t.start_minutes(), t.end_minutes())
+            for t in pool
+            if t.start_minutes() is not None
+        )
+
+        cursor = day_start
+        for start, end in busy:
+            if end <= cursor:
+                continue  # block already behind the cursor
+            # Is there room between the cursor and this block starting?
+            if start - cursor >= duration_minutes:
+                break  # gap found at `cursor`
+            cursor = max(cursor, end)  # jump past this block
+
+        if cursor + duration_minutes <= day_end:
+            return f"{cursor // 60:02d}:{cursor % 60:02d}"
+        return None
+
     def complete_task(self, name: str, pet_name: Optional[str] = None) -> bool:
         """Mark the first matching task complete. Returns True if one was found.
 
@@ -354,6 +482,25 @@ class Scheduler:
         return sorted(
             pool,
             key=lambda t: (-t.priority_score(self.preferences), t.duration_minutes),
+        )
+
+    def sort_by_priority_then_time(
+        self, candidates: Optional[list[Task]] = None
+    ) -> list[Task]:
+        """Order tasks by priority (highest first), then by clock time.
+
+        This is the "priority-first" view: a high-priority task always precedes
+        a medium one regardless of the hour, and tasks sharing a priority fall
+        back to earliest `due_time` (untimed tasks last, via the "99:99"
+        sentinel). Owner preferences still boost a task's effective priority.
+        Unlike `prioritize_tasks()` (which tie-breaks by shortest duration to
+        pack the time budget), this method tie-breaks by time for a readable,
+        chronological agenda within each priority tier.
+        """
+        pool = candidates if candidates is not None else self.tasks
+        return sorted(
+            pool,
+            key=lambda t: (-t.priority_score(self.preferences), t.due_time or "99:99"),
         )
 
     def fits_time_budget(self, task: Task, remaining: int) -> bool:

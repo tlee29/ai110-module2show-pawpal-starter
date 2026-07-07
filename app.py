@@ -1,6 +1,13 @@
+from datetime import time
+
 import streamlit as st
 
 from pawpal_system import Owner, Pet, Task, Scheduler
+
+
+def _hhmm(minutes: int) -> str:
+    """Format minutes-since-midnight back into an 'HH:MM' clock string."""
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
@@ -41,10 +48,18 @@ At minimum, your system should:
 st.divider()
 
 # --- Persist the Owner in the session "vault" so data survives reruns. -----
+# On first load, restore from data.json if it exists; otherwise start fresh.
 if "owner" not in st.session_state:
-    st.session_state.owner = Owner(name="Jordan", available_minutes_per_day=60)
+    st.session_state.owner = (
+        Owner.load_from_json() or Owner(name="Jordan", available_minutes_per_day=60)
+    )
 
 owner = st.session_state.owner
+
+# Save the full owner graph (pets + tasks) to data.json between runs.
+if st.button("💾 Save data"):
+    owner.save_to_json()
+    st.success("Saved to data.json — your pets and tasks will be here next run.")
 
 # --- Owner settings --------------------------------------------------------
 st.subheader("Owner")
@@ -83,6 +98,8 @@ if owner.pets:
         duration = st.number_input("Duration (minutes)", min_value=1, max_value=240, value=20)
         priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
         frequency = st.selectbox("Frequency", ["daily", "weekly"])
+        set_time = st.checkbox("Set a start time (enables sorting + conflict checks)")
+        start_time = st.time_input("Start time", value=time(8, 0), disabled=not set_time)
         if st.form_submit_button("Add task"):
             pet = next(p for p in owner.pets if p.name == pet_choice)
             # Pet.add_task() attaches the task (and stamps the pet's name).
@@ -93,6 +110,8 @@ if owner.pets:
                     duration_minutes=int(duration),
                     priority=priority,
                     frequency=frequency,
+                    # "HH:MM" is what Scheduler.sort_by_time / find_conflicts expect.
+                    due_time=start_time.strftime("%H:%M") if set_time else None,
                 )
             )
             st.success(f"Added '{task_title}' for {pet_choice}.")
@@ -107,6 +126,7 @@ for pet in owner.pets:
                 [
                     {
                         "task": t.name,
+                        "time": t.due_time or "—",
                         "minutes": t.duration_minutes,
                         "priority": t.priority,
                         "frequency": t.frequency,
@@ -129,16 +149,41 @@ if st.button("Generate schedule"):
     else:
         # Owner.view_daily_schedule() builds a Scheduler and returns a DailyPlan.
         plan = owner.view_daily_schedule()
+        # A Scheduler over the same tasks gives us sorting + conflict checks.
+        scheduler = Scheduler.from_owner(owner)
+
         st.markdown(f"### Today's Schedule for {owner.name}")
         st.caption(plan.summary())
 
-        if plan.scheduled:
-            st.markdown("**Scheduled**")
+        # Scheduler.find_conflicts(): timed tasks whose [start, end) windows overlap.
+        conflicts = scheduler.find_conflicts(plan.scheduled)
+        if conflicts:
+            st.warning(
+                f"⚠️ {len(conflicts)} scheduling conflict(s) — you can't be in two "
+                "places at once. Consider moving or shortening one task in each row."
+            )
             st.table(
                 [
-                    {"task": t.name, "pet": t.pet_name, "minutes": t.duration_minutes,
-                     "priority": t.priority}
-                    for t in plan.scheduled
+                    {
+                        "overlap": f"{_hhmm(max(a.start_minutes(), b.start_minutes()))}"
+                        f"–{_hhmm(min(a.end_minutes(), b.end_minutes()))}",
+                        "task A": f"{a.name} ({a.pet_name or '?'}) {a.due_time}",
+                        "task B": f"{b.name} ({b.pet_name or '?'}) {b.due_time}",
+                    }
+                    for a, b in conflicts
+                ]
+            )
+        else:
+            st.success("✅ No time conflicts — the day flows cleanly.")
+
+        if plan.scheduled:
+            st.markdown("**Scheduled** (ordered by start time)")
+            # Scheduler.sort_by_time(): earliest due_time first, untimed last.
+            st.table(
+                [
+                    {"time": t.due_time or "—", "task": t.name, "pet": t.pet_name,
+                     "minutes": t.duration_minutes, "priority": t.priority}
+                    for t in scheduler.sort_by_time(plan.scheduled)
                 ]
             )
         if plan.skipped:
