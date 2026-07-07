@@ -43,7 +43,7 @@ pip install -r requirements.txt
 7. Refine UML so it matches what you actually built.
 
 ## 🖥️ Sample Output
-
+```
 ============================================
  Today's Schedule for Jordan                
  Time budget: 60 min                        
@@ -57,7 +57,7 @@ pip install -r requirements.txt
 ============================================
  3 task(s) scheduled (45 min), 1 skipped
 ============================================
-
+```
 ## 🧪 Testing PawPal+
 
 ```bash
