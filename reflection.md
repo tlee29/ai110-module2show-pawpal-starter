@@ -5,12 +5,22 @@
 **a. Initial design**
 
 - Briefly describe your initial UML design.
+>> Owner own pet objects 
+>> Each pet has multiple task objects
+>> Scheduler uses the Owner and Task information to create a DailyPlan
+>> Streamlit UI communicates with these classes 
 - What classes did you include, and what responsibilities did you assign to each?
+>> Owner: name, available time per day, and scheduling preference
+>> Pet: name, species, age, care tasks
+>> Task: pet care tasks: task name, duration, priority, frequency, and completion status
+>> Scheduler: scheduling algorithm: selects and orders tasks based on available time, task priority, and owner preferences to generate the daily care plan
 
 **b. Design changes**
 
 - Did your design change during implementation?
+>> Yes
 - If yes, describe at least one change and why you made it.
+>> explain_decisions() can't works as a standalone method/ fixed to return both the ordered tasks and the explanations together and drop the separate method
 
 ---
 
@@ -23,8 +33,7 @@
 
 **b. Tradeoffs**
 
-- Describe one tradeoff your scheduler makes.
-- Why is that tradeoff reasonable for this scenario?
+My scheduler uses a greedy, priority-first algorithm: it sorts tasks by priority (shortest-duration as a tiebreak) and fills the day until time runs out, without reconsidering earlier choices. The tradeoff is that it optimizes for doing the most important tasks first rather than fitting the most tasks into the day — a long high-priority task can crowd out several shorter ones that would collectively deliver more care. This is reasonable here because a pet owner cares most about the critical tasks (medication, walks) getting done, and because greedy selection stays fast, deterministic, and easy to explain ("scheduled first because it had the highest priority").
 
 ---
 
